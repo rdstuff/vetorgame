@@ -469,6 +469,11 @@ const SND = {
     this.blip(0, 820, 260, 0.11, 'square', 0.09);
     this.noise(this.ctx.currentTime, 0.12, 0.09, 'bandpass', 900, 1.2, this.sfxBus);
   },
+  heal(){                                    // sino ascendente, distinto do orbe
+    if (!this.ready) return;
+    [[76, 0, 0.22, 'sine', 0.085], [83, 0.07, 0.3, 'sine', 0.065], [88, 0.15, 0.42, 'triangle', 0.05]]
+      .forEach(([n, d, dur, type, vol]) => this.blip(d, this.mtof(n), this.mtof(n), dur, type, vol));
+  },
   shot(kind){ this.blip(0, kind === 'seeker' ? 200 : 300, kind === 'seeker' ? 120 : 180, 0.09, 'sawtooth', 0.035); },
   bomb(){ this.blip(0, 190, 110, 0.1, 'triangle', 0.035); },
   boom(){
@@ -685,7 +690,7 @@ let platforms = [], enemies = [], shots = [], orbs = [], parts = [], rings = [],
 let cursorX = 0, lastY = 0, segCount = 0;
 let cam = { x:0, y:0, sx:0, sy:0, shake:0 };
 let score = 0, distance = 0, maxX = 0, combo = 1, comboTimer = 0;
-let curSector = 1, sectorFx = 0;
+let curSector = 1, sectorFx = 0, healFx = 0;
 let best = 0;
 try { best = parseInt(localStorage.getItem('vetor_best') || '0', 10) || 0; } catch(e){ best = 0; }
 
@@ -831,7 +836,7 @@ function resetWorld(){
   player.grounded = false; player.coyote = 0; player.squash = 0; player.dead = false;
   cam.x = player.x - W * 0.34; cam.y = player.y - H * 0.55;
   cam.sx = cam.x; cam.sy = cam.y; cam.shake = 0;
-  curSector = 1; sectorFx = 0;
+  curSector = 1; sectorFx = 0; healFx = 0;
   setTheme(themeForSector(1), true);
   updateTheme(0);
   SND.setSector(1);
@@ -1028,8 +1033,15 @@ function updatePlayer(dt){
   if (player.y > DEATH_Y) killPlayer('fall');
 }
 
+const RING_RGB = {};
+RING_RGB[COL.player] = '238,241,247';
+RING_RGB[COL.danger] = '255,47,109';
+RING_RGB[COL.orb]    = '79,227,193';
+
 function ringFx(x, y, r, color, life, deadly){
-  rings.push({ x, y, r:8, maxR:r, life, max:life, color, deadly:!!deadly, hit:false });
+  rings.push({ x, y, r:8, maxR:r, life, max:life, color,
+               rgb: RING_RGB[color] || RING_RGB[COL.danger],
+               soft: color === COL.player, deadly:!!deadly, hit:false });
 }
 
 function fireShot(x, y, tx, ty, speed, kind){
@@ -1111,6 +1123,16 @@ function updateEnemies(dt){
         burst(ecx, ecy, 10, COL.danger, 240, true, 3);
         ringFx(ecx, ecy, 42, COL.danger, 0.3, false);
         SND.stomp();
+        // Eliminar inimigo devolve uma unidade de vida: é o que permite
+        // sustentar as corridas longas nos setores mais difíceis.
+        if (player.hp < player.maxHp){
+          player.hp++;
+          healFx = 1;
+          popText(ecx, ecy - 34, '+1 LIFE', COL.orb);
+          burst(ecx, ecy, 12, COL.orb, 220, true, 2.6);
+          ringFx(ecx, ecy, 30, COL.orb, 0.35, false);
+          SND.heal();
+        }
       } else {
         hurtPlayer(ecx, ecy);
       }
@@ -1263,6 +1285,7 @@ function update(dt){
   updateParts(dt);
   updateTheme(dt);
   sectorFx = Math.max(0, sectorFx - dt / 1.5);
+  healFx = Math.max(0, healFx - dt / 0.7);
   if (state !== 'paused') updateCamera(dt);
 }
 
@@ -1504,16 +1527,14 @@ function drawRings(){
   ctx.globalCompositeOperation = 'lighter';
   for (const r of rings){
     const a = clamp(r.life / r.max, 0, 1);
-    ctx.strokeStyle = r.color === COL.player
-      ? 'rgba(238,241,247,' + (a * 0.55) + ')'
-      : 'rgba(255,47,109,' + (a * 0.9) + ')';
+    ctx.strokeStyle = 'rgba(' + r.rgb + ',' + (a * (r.soft ? 0.55 : 0.9)) + ')';
     ctx.lineWidth = 2 + a * 3;
     ctx.beginPath(); ctx.arc(r.x, r.y, r.r, 0, 6.2832); ctx.stroke();
-    if (r.color !== COL.player){
+    if (!r.soft){
       const g = ctx.createRadialGradient(r.x, r.y, r.r * 0.6, r.x, r.y, r.r * 1.25);
-      g.addColorStop(0, 'rgba(255,47,109,0)');
-      g.addColorStop(0.7, 'rgba(255,47,109,' + (a * 0.28) + ')');
-      g.addColorStop(1, 'rgba(255,47,109,0)');
+      g.addColorStop(0, 'rgba(' + r.rgb + ',0)');
+      g.addColorStop(0.7, 'rgba(' + r.rgb + ',' + (a * 0.28) + ')');
+      g.addColorStop(1, 'rgba(' + r.rgb + ',0)');
       ctx.fillStyle = g;
       ctx.beginPath(); ctx.arc(r.x, r.y, r.r * 1.25, 0, 6.2832); ctx.fill();
     }
@@ -1609,11 +1630,17 @@ function drawHUD(){
   ctx.font = '500 11px ui-monospace, monospace';
   ctx.fillText('BEST ' + String(best).padStart(6, '0'), 22, 80);
 
-  // vida
+  // vida — a unidade recém-recuperada pulsa na cor de cura
   for (let i = 0; i < player.maxHp; i++){
     const x = 22 + i * 16, y = 102;
-    if (i < player.hp){ ctx.fillStyle = COL.player; ctx.fillRect(x, y, 10, 10); }
-    else { ctx.strokeStyle = COL.dim; ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, y + 0.5, 9, 9); }
+    if (i < player.hp){
+      const fresh = healFx > 0 && i === player.hp - 1;
+      const g = fresh ? healFx * 2.5 : 0;
+      ctx.fillStyle = fresh ? COL.orb : COL.player;
+      ctx.fillRect(x - g, y - g, 10 + g * 2, 10 + g * 2);
+    } else {
+      ctx.strokeStyle = COL.dim; ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, y + 0.5, 9, 9);
+    }
   }
 
   // setor + distância
@@ -1717,7 +1744,7 @@ function drawMenu(){
   ctx.letterSpacing = '1px';
   const lines = ['A / D  or  ← →   MOVE',
                  'SPACE  JUMP  (double jump in air)',
-                 'STOMP ENEMIES TO SCORE',
+                 'STOMP ENEMIES: SCORE + RESTORE 1 LIFE',
                  'P PAUSE  ·  R RESTART  ·  M MUTE'];
   if (isTouch) lines.push('TOUCH: LEFT SIDE MOVES · RIGHT SIDE JUMPS');
   lines.push('', isTouch ? 'PRESS SPACE OR TAP TO START' : 'PRESS SPACE TO START');
